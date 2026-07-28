@@ -1,0 +1,54 @@
+name: Keep Supabase Awake
+
+# Supabase pauses free-tier projects after 7 days with no activity. When that
+# happens the alementepresente.com Reconnect/RenaSER lead forms and the admin
+# dashboard fail silently. A daily read query keeps the project active.
+#
+# The heartbeat commit exists because GitHub disables scheduled workflows in
+# repositories with no activity for 60 days — without it, this repo would go
+# quiet and stop pinging.
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Query Supabase REST API
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          # rena_ser_inquiries has a public SELECT policy for anon, so a healthy
+          # project returns 200 rather than an RLS error we'd have to allow for.
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            "${SUPABASE_URL}/rest/v1/rena_ser_inquiries?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
+
+          echo "HTTP ${status}"
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::Supabase ping failed (HTTP ${status}). The project may"
+            echo "::error::already be paused, or the secrets may be wrong."
+            exit 1
+          fi
+
+          echo "Supabase project is awake."
+
+      - name: Heartbeat commit to keep this repo active
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > last-ping.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add last-ping.txt
+          git diff --quiet --cached || git commit -m "chore: supabase keep-alive heartbeat"
+          git push
